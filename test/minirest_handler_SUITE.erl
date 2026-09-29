@@ -34,6 +34,7 @@ all() ->
         t_handler_meta_in_auth,
         t_route_path_in_auth,
         t_post_large_body,
+        t_json_utf8,
         t_update_log_meta_outside_request
     ].
 
@@ -135,6 +136,35 @@ t_post_large_body(_Config) ->
     Headers = [{<<"content-type">>, <<"application/json">>}],
     {ok, 200, _, Ref} = hackney:request(post, URL, Headers, Json100MB, []),
     ?assertEqual({ok, <<"OK">>}, hackney:body(Ref)).
+
+t_json_utf8(_Config) ->
+    URL = address() ++ "/post_large_body",
+    Headers = [{<<"content-type">>, <<"application/json">>}],
+    Valid = <<"{\"value\":\"caf", 16#C3, 16#A9, "\"}">>,
+    {ok, 200, _, ValidRef} = hackney:request(post, URL, Headers, Valid, []),
+    ?assertEqual({ok, <<"OK">>}, hackney:body(ValidRef)),
+    InvalidValues = [
+        <<16#30, 16#82, 16#01, 16#80, 16#A0>>,
+        <<"caf", 16#C3>>,
+        binary:copy(<<16#80>>, 1_048_576)
+    ],
+    lists:foreach(
+        fun(Value) ->
+            Invalid = <<"{\"value\":\"", Value/binary, "\"}">>,
+            {ok, 400, _, Ref} = hackney:request(post, URL, Headers, Invalid, []),
+            {ok, Response} = hackney:body(Ref),
+            ?assert(byte_size(Response) < 128),
+            ?assertEqual(nomatch, binary:match(Response, <<16#EF, 16#BF, 16#BD>>)),
+            ?assertMatch(
+                #{
+                    <<"code">> := <<"BAD_REQUEST">>,
+                    <<"message">> := <<"Invalid json message received">>
+                },
+                jsx:decode(Response, [return_maps])
+            )
+        end,
+        InvalidValues
+    ).
 
 %% `update_log_meta/1' does nothing in a process that does not handle a
 %% minirest request.
